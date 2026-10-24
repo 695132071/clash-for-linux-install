@@ -252,6 +252,7 @@ _install_refresh_current() (
         # 使用本次安装器的样式，避免旧安装的输出函数改变阶段前缀。
         printf '\n' >&2
         _install_bootstrap_step '应用本地源码更新'
+        . "$update_source/scripts/install-common.sh" || return 1
         _update_archive "$stage" "$work"
     else
         . "$home/scripts/preflight.sh" || return 1
