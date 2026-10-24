@@ -102,6 +102,37 @@ assert_absent "$BRIDGE_LOCK_BASE/clashctl-operation-$EUID/operation.lock.d" 'int
 CLASHCTL_HOME="$bridge_home" bash -c '. "$1"; _install_bridge' \
     _ "$REPO_DIR/scripts/install-migration.sh" || fail 'interrupted bridge could not retry'
 assert_absent "$BRIDGE_LOCK_BASE/clashctl-operation-$EUID/operation.lock.d" 'retried bridge lock'
+# A user unit may still reference a removed system yq after local yq repair.
+(
+    . "$REPO_DIR/scripts/lib/service.sh"
+    service_manager=systemd-user
+    unit="$WORK_DIR/yq.service"
+    unit_path=$unit
+    BIN_YQ="$CLASHCTL_HOME/bin/yq"
+    _service_target() { printf '%s\n' "$unit_path"; }
+    systemctl() {
+        [ "$*" = '--user daemon-reload' ] || fail "unexpected service operation: $*"
+        if [ "${FAIL_YQ_RELOAD:-0}" = 1 ] && [ ! -e "$WORK_DIR/yq-reload-failed" ]; then
+            touch "$WORK_DIR/yq-reload-failed"
+            return 1
+        fi
+    }
+    printf 'ExecStart=%s -d %s -f %s\nExecCondition=/usr/bin/yq -e '\''.tun.enable != true'\'' %s\nEnvironment=CUSTOM=preserved\n' \
+        "$BIN_KERNEL" "$CLASH_RESOURCES_DIR" "$CLASH_CONFIG_RUNTIME" "$CLASH_CONFIG_RUNTIME" >"$unit"
+    chmod 0640 "$unit"
+    cp -p "$unit" "$WORK_DIR/yq-unit.before"
+    if FAIL_YQ_RELOAD=1 _install_refresh_yq_condition; then fail 'yq unit reload failure was accepted'; fi
+    cmp "$unit" "$WORK_DIR/yq-unit.before" || fail 'yq unit rollback changed the original'
+    _install_refresh_yq_condition || fail 'yq unit repair could not retry'
+    assert_contains "$unit" "ExecCondition=$BIN_YQ -e '.tun.enable != true' $CLASH_CONFIG_RUNTIME" 'repaired yq condition'
+    assert_eq 640 "$(stat -c %a "$unit")" 'repaired unit mode'
+    grep -v '^ExecCondition=' "$WORK_DIR/yq-unit.before" >"$WORK_DIR/yq-unit.other-before"
+    grep -v '^ExecCondition=' "$unit" >"$WORK_DIR/yq-unit.other-after"
+    cmp "$WORK_DIR/yq-unit.other-before" "$WORK_DIR/yq-unit.other-after" || fail 'yq repair changed custom unit settings'
+    cp "$unit" "$WORK_DIR/yq-unit.expected"
+    _install_refresh_yq_condition || fail 'repeated yq unit repair failed'
+    cmp "$unit" "$WORK_DIR/yq-unit.expected" || fail 'repeated yq unit repair changed the unit'
+)
 
 # 首批 update 已使用 name 模型，但其旧交互 Shell 仍以 flock 写 data/。
 # 只在真实历史 rename 临界区加入屏障；迁移必须先等它完成再备份。

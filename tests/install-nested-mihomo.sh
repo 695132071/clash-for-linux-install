@@ -425,6 +425,16 @@ for scenario in git-running archive-stopped; do
     fi
 done
 
+# An initialized reinstall failure must not make the next retry start a stopped core.
+home="$WORK_DIR/archive-stopped"
+printf '# >>> clashctl >>>\n' >"$HOME/.bashrc"
+if run_upgrade archive "$home" >"$WORK_DIR/completed-retry.out" 2>&1; then fail 'broken Shell configuration was accepted'; fi
+assert_absent "$home/.clashctl-incomplete" 'refresh failure converted an initialized installation into a fresh retry'
+assert_absent "$home/data/mihomo.pid" 'failed refresh started a stopped service'
+printf '# preserved user settings\n' >"$HOME/.bashrc"
+run_upgrade archive "$home" >"$WORK_DIR/completed-retry.out" 2>&1 || { cat "$WORK_DIR/completed-retry.out"; fail 'initialized installation could not retry'; }
+assert_absent "$home/data/mihomo.pid" 'refresh retry started a stopped service'
+
 # 新 update 在源码部署流程内调用迁移，覆盖已有脚本已加载的 Shell。
 for method in git archive; do
     home="$WORK_DIR/new-update-$method"
@@ -751,6 +761,31 @@ assert_recorded_kernel "$home" mihomo
 assert_absent "$home/.clashctl-incomplete" 'fresh installation was left incomplete'
 assert_eq 1 "$(cat "$home/.clashctl-format")" 'fresh installation format'
 
+# Reinstall can repair a missing core without treating a stopped installation as fresh.
+_service_process_stop_recorded "$home/data/mihomo.pid"
+rm -f "$home/data/mihomo.pid" "$home/bin/mihomo"
+run_upgrade archive "$home" >"$WORK_DIR/repair.out" 2>&1 || { cat "$WORK_DIR/repair.out"; fail 'missing core repair failed'; }
+[ -x "$home/bin/mihomo" ] || fail 'reinstall did not restore the missing core'
+assert_absent "$home/data/mihomo.pid" 'core repair started a stopped service'
+assert_absent "$home/.clashctl-incomplete" 'core repair marked an initialized installation incomplete'
+
+# Reinstall repairs yq after the previously borrowed system copy is removed.
+kernel_hash=$(sha256sum "$home/bin/mihomo" | cut -d ' ' -f1)
+snapshot_data "$home" >"$WORK_DIR/yq-repair.before"
+mkdir "$WORK_DIR/yq-package"
+cp "$REAL_YQ" "$WORK_DIR/yq-package/yq_linux_fixture"
+tar -czf "$home/archives/yq-v4.53.3-$(uname -m).tar.gz" -C "$WORK_DIR/yq-package" yq_linux_fixture
+NESTED_NO_SYSTEM_YQ=1 run_upgrade archive "$home" >"$WORK_DIR/yq-repair.out" 2>&1 || {
+    cat "$WORK_DIR/yq-repair.out"; fail 'reinstall did not repair missing yq';
+}
+"$home/bin/yq" --version | grep -q 'mikefarah.*v4\.' || fail 'reinstall left yq unavailable'
+assert_eq "$kernel_hash" "$(sha256sum "$home/bin/mihomo" | cut -d ' ' -f1)" 'yq repair kernel bytes'
+assert_absent "$home/data/mihomo.pid" 'yq repair started a stopped service'
+assert_absent "$home/.clashctl-incomplete" 'yq repair marked an initialized installation incomplete'
+rm "$home/archives/yq-v4.53.3-$(uname -m).tar.gz"
+snapshot_data "$home" >"$WORK_DIR/yq-repair.after"
+cmp "$WORK_DIR/yq-repair.before" "$WORK_DIR/yq-repair.after" || fail 'yq repair changed existing user data'
+
 # 已有 Clash 的升级只转换布局，不下载或替换内核。
 for state in running stopped; do
     home="$WORK_DIR/clash-$state"
@@ -952,5 +987,10 @@ for state in running stopped retry; do
     assert_eq 0 "$(yq '.profiles // [] | length' "$home/resources/profiles.yaml")" 'source template contains old user records'
     if [ "$state" != stopped ]; then assert_recorded_kernel "$home" mihomo;
     else assert_absent "$home/data/mihomo.pid" 'legacy stopped service was started'; fi
+    # 重复安装保留停止状态，不重新初始化已完成的安装。
+    if [ "$state" = stopped ]; then
+        run_upgrade archive "$home" >"$WORK_DIR/repeated.out" 2>&1 || { cat "$WORK_DIR/repeated.out"; fail 'repeated legacy install failed'; }
+        assert_absent "$home/data/mihomo.pid" 'repeated legacy install started a stopped service'
+    fi
 done
 printf 'install-nested-mihomo: ok (uid=%s)\n' "$(id -u)"

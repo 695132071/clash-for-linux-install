@@ -414,7 +414,7 @@ for form in separate equals; do
     grep -q 'fetch .* iu$' "$WORK_DIR/branch-update.log" || fail 'update did not fetch saved branch'
     CLASHCTL_HOME="$branch_home" CLASHCTL_UPDATE_BRANCH=legacy \
         bash "$branch_home/install.sh" --branch master >"$WORK_DIR/branch-switch.out" 2>&1
-    [ "$(cat "$branch_home/data/download-options")" = 'mihomo|master|' ] || fail 'branch flag did not override environment and saved branch'
+    [ "$(cat "$branch_home/data/download-options")" = 'mihomo|iu|' ] || fail 'script update unexpectedly downloaded components'
     grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$branch_home/.env" || fail 'branch switch was not persisted'
 done
 # .env 尚未生成时，失败提示中的命令也必须能恢复原分支。
@@ -1335,9 +1335,10 @@ for name, data, expected in [
             assert file.read() == expected, name + ": incorrect subscription URL"
 
 # 已有配置的重复安装不能再次询问或覆盖订阅，保留用户主动停止的状态。
+os.remove(home + "/data/started")
 home, output, _ = install_in_terminal("tty-install")
 assert prompt not in output, "configured installation prompted again"
-assert os.path.isfile(home + "/data/started"), "repeat installation did not preserve the running kernel"
+assert not os.path.exists(home + "/data/started"), "repeat installation started a stopped kernel"
 with open(home + "/data/subscription") as saved:
     assert saved.read() == "file:///private-subscription", "repeat installation changed the subscription"
 

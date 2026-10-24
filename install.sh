@@ -763,6 +763,35 @@ _install_add_subscription() {
     fi
 }
 
+# 重装时同步 yq 的实际位置，只修改本安装的标准用户服务条件。
+_install_refresh_yq_condition() (
+    [ "$service_manager" = systemd-user ] || return 0
+    local unit work keep=false
+    unit=$(_service_target) || return 1
+    [ -e "$unit" ] || return 0
+    [ ! -L "$unit" ] && _service_definition_is_owned "$unit" || return 1
+    work=$(mktemp -d) || return 1
+    trap '[ "$keep" = true ] || rm -rf -- "$work"' EXIT
+    YQ_PATH=$BIN_YQ CONFIG_PATH=$CLASH_CONFIG_RUNTIME awk '
+        /^ExecCondition=[^[:space:]]*\/yq -e / &&
+        substr($0, index($0, " -e ")) == " -e \047.tun.enable != true\047 " ENVIRON["CONFIG_PATH"] {
+            print "ExecCondition=" ENVIRON["YQ_PATH"] " -e \047.tun.enable != true\047 " ENVIRON["CONFIG_PATH"]; next
+        }
+        { print }
+    ' "$unit" >"$work/new" || return 1
+    cmp -s -- "$unit" "$work/new" && return 0
+    cp -p -- "$unit" "$work/previous" &&
+        chmod "$(stat -c %a -- "$unit")" "$work/new" &&
+        _install_migration_restore_file "$work/new" "$unit" || return 1
+    if ! _install_migration_reload; then
+        if ! { _install_migration_restore_file "$work/previous" "$unit" && _install_migration_reload; }; then
+            keep=true
+            _ui_error "服务条件恢复失败，请保留备份：$work"
+        fi
+        return 1
+    fi
+)
+
 _install_initialize() {
     export CLASHCTL_SRC="$CLASHCTL_HOME"
     . "$CLASHCTL_SRC/scripts/preflight.sh" || return 1
@@ -791,6 +820,16 @@ _install_initialize() {
     fi
 
     if [ "${_INSTALL_EXISTING_COMPLETE:-false}" = true ]; then
+        if [ ! -x "$BIN_YQ" ]; then
+            _install_ui_step '修复缺失的 yq'
+            prepare_zip yq || return 1
+        fi
+        _install_refresh_yq_condition || return 1
+        # 重装可补回缺失文件；已有内核始终保留，迁移模块不下载内核。
+        if [ ! -e "$BIN_KERNEL" ] && [ ! -L "$BIN_KERNEL" ]; then
+            _install_ui_step '修复缺失的内核文件'
+            prepare_zip kernel || return 1
+        fi
         _set_env CLASHCTL_UPDATE_BRANCH "$branch" && _set_env GH_PROXY "$proxy" || return 1
         [ "${4:-}" != x ] || _set_env CLASHCTL_DOWNLOAD_TIMEOUT "$5" || return 1
         if [ "$selected_service" != "$service_manager" ]; then
@@ -1168,7 +1207,7 @@ HELP
             export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
             if [ -f "$install_home/.env" ] && [ ! -e "$install_home/.clashctl-uninitialized" ] &&
                 [ ! -e "$install_home/.clashctl-incomplete" ]; then
-                if ! _install_format_current; then _INSTALL_EXISTING_COMPLETE=true; fi
+                _INSTALL_EXISTING_COMPLETE=true
                 _install_intro '更新现有安装' "$install_home" "$home_source" "$local_source" "$branch"
                 _install_refresh_current "$install_home" "$method" "$local_source" "$script_dir" "$branch" "$proxy" || exit 1
             else
