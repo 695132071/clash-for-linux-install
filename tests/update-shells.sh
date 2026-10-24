@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# 真实 Bash/Zsh 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
+# 真实 Bash/Zsh/Fish 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
 set -euo pipefail
 REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 command -v zsh >/dev/null || fail 'zsh is required'
+command -v fish >/dev/null || fail 'fish is required'
 export REAL_GIT SOURCE_REPO="$WORK_DIR/source" SOURCE_ARCHIVE="$WORK_DIR/source.tar.gz"
 REAL_GIT=$(command -v git)
 mkdir -p "$SOURCE_REPO" "$WORK_DIR/bin"
@@ -14,6 +15,7 @@ cp "$REPO_DIR/"{install.sh,uninstall.sh,.env.example,.gitignore} "$SOURCE_REPO/"
 # 安装入口即使有效但不能被执行，脚本更新也应只加载共用库。
 printf 'printf "unexpected installer load\\n" >&2; exit 95\n' >"$SOURCE_REPO/install.sh"
 printf 'CLASHCTL_TEST_VERSION=old\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
+printf '\nfunction __clashctl_test_version; echo old; end\n' >>"$SOURCE_REPO/scripts/cmd/clashctl.fish"
 "$REAL_GIT" -C "$SOURCE_REPO" init -q -b master
 "$REAL_GIT" -C "$SOURCE_REPO" config user.email test@example.invalid
 "$REAL_GIT" -C "$SOURCE_REPO" config user.name test
@@ -36,7 +38,12 @@ for shell in bash zsh; do
         printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
     done
 done
+cp -a "$WORK_DIR/bash-archive" "$WORK_DIR/fish-archive"
+printf '%s\narchive\n' "$WORK_DIR/fish-archive" >"$WORK_DIR/fish-archive/.clashctl-install"
 printf 'CLASHCTL_TEST_VERSION=new\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
+sed -i 's/function __clashctl_test_version; echo old;/function __clashctl_test_version; echo new;/' \
+    "$SOURCE_REPO/scripts/cmd/clashctl.fish"
+printf 'clashfuture() { printf "new-command\\n"; }\n' >"$SOURCE_REPO/scripts/cmd/future.sh"
 printf 'new_helper=true\n' >"$SOURCE_REPO/scripts/new-helper.sh"
 # 目标版本移动私有模块；旧更新器只能依赖稳定入口，不能继续读取旧路径。
 mv "$SOURCE_REPO/scripts/install-common.sh" "$SOURCE_REPO/scripts/source-common.sh"
@@ -122,6 +129,36 @@ for shell in bash zsh; do
         ' >"$WORK_DIR/output" 2>&1 || { cat "$WORK_DIR/output"; fail "$shell $method update failed"; }
     done
 done
+# Fish 的 update 在 Bash 子进程中执行，成功后还必须刷新当前会话的原生包装器。
+# shellcheck disable=SC2016  # 变量由被测 Fish 展开。
+PATH="$WORK_DIR/bin:$PATH" CLASHCTL_HOME="$WORK_DIR/fish-archive" fish --no-config -c '
+    source "$CLASHCTL_HOME/scripts/cmd/clashctl.fish"; or exit 1
+    test (__clashctl_test_version) = old; or exit 1
+    function __clashctl_test_version; echo session; end
+    clashctl update --help; or exit 1
+    test (__clashctl_test_version) = session; or exit 1
+    functions -q clashfuture; and exit 1
+
+    # 空参数同样会执行更新，不能把“存在参数”误判为帮助。
+    clashctl update ""; or exit 1
+    test (__clashctl_test_version) = new; or exit 1
+    test (clashctl future) = new-command; or exit 1
+    function __clashctl_test_version; echo stale; end
+    clashctl update; or exit 1
+    test (__clashctl_test_version) = new; or exit 1
+
+    # 失败应保留退出码和当前函数；源码已更新但 Fish 加载失败时单独报错。
+    function __clashctl_test_version; echo retained; end
+    function __clashctl_run; return 17; end
+    clashctl update
+    test $status -eq 17; or exit 1
+    test (__clashctl_test_version) = retained; or exit 1
+    function __clashctl_run; return 0; end
+    printf "end\n" >"$CLASHCTL_HOME/scripts/cmd/clashctl.fish"
+    clashctl update
+    test $status -eq 1; or exit 1
+' >"$WORK_DIR/output" 2>&1 || { cat "$WORK_DIR/output"; fail 'Fish current-session update failed'; }
+grep -q '当前 Fish 加载失败' "$WORK_DIR/output" || fail 'Fish reload failure was not diagnosed'
 # checkout 可在索引、HEAD 尚未切换时失败，也可在切换后失败；两者都必须恢复。
 for shell in bash zsh; do
     shell_args=(-c)
