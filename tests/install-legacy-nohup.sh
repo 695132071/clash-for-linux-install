@@ -16,9 +16,12 @@ esac
 CRONTAB
 chmod +x "$WORK_DIR/bin/crontab"
 export PATH="$WORK_DIR/bin:$PATH"
-old_pid='' restored_pid='' foreign_pid='' altered_pid=''
+old_pid='' restored_pid='' foreign_pid='' altered_pid='' writer_pid=''
 interrupt_old_pid='' interrupt_restored_pid='' interrupt_launcher_pid='' interrupt_main_pid=''
 cleanup() {
+    if declare -F _install_legacy_profiles_lock_release >/dev/null 2>&1; then
+        _install_legacy_profiles_lock_release || true
+    fi
     if declare -F operation_lock_release >/dev/null 2>&1; then
         operation_lock_release || true
     fi
@@ -26,6 +29,7 @@ cleanup() {
     [ -z "$restored_pid" ] || kill "$restored_pid" 2>/dev/null || true
     [ -z "$foreign_pid" ] || kill "$foreign_pid" 2>/dev/null || true
     [ -z "$altered_pid" ] || kill "$altered_pid" 2>/dev/null || true
+    [ -z "$writer_pid" ] || kill "$writer_pid" 2>/dev/null || true
     [ -z "$interrupt_old_pid" ] || kill "$interrupt_old_pid" 2>/dev/null || true
     [ -z "$interrupt_restored_pid" ] || kill "$interrupt_restored_pid" 2>/dev/null || true
     [ -z "$interrupt_main_pid" ] || kill "$interrupt_main_pid" 2>/dev/null || true
@@ -37,6 +41,7 @@ trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 CLASHCTL_INSTALL_RUNNING=1 . "$REPO_DIR/install.sh"
+. "$REPO_DIR/scripts/install-migration.sh"
 . "$REPO_DIR/scripts/lib/service-process.sh"
 . "$REPO_DIR/scripts/lib/operation-lock.sh"
 detect_service_manager() { service_manager=nohup; }
@@ -44,10 +49,12 @@ legacy="$WORK_DIR/old"
 mkdir -p "$legacy/bin" "$legacy/resources"
 cp /bin/sleep "$legacy/bin/mihomo"
 existing_kind=legacy-v1
+# shellcheck disable=SC2218  # Test the sourced implementation before replacing it below.
 _install_legacy_nohup_command "$legacy" mihomo
 [ "${legacy_nohup_command[*]}" = "$legacy/bin/mihomo -d $legacy/resources -f $legacy/resources/runtime.yaml" ] ||
     fail 'master nohup command does not match its runtime layout'
 existing_kind=legacy-v2
+# shellcheck disable=SC2218  # Test the sourced implementation before replacing it below.
 _install_legacy_nohup_command "$legacy" mihomo
 [ "${legacy_nohup_command[*]}" = "$legacy/bin/mihomo -d $legacy/resources -f $legacy/data/runtime.yaml" ] ||
     fail 'legacy v2 nohup command does not match its runtime layout'
@@ -96,6 +103,70 @@ kill "$restored_pid"
 wait "$restored_pid" 2>/dev/null || true
 restored_pid=''
 
+# 旧版从订阅锁内启动的 nohup 内核会继承 fd 9；必须先停内核再取锁。
+(
+    flock -x 9
+    "$legacy/bin/mihomo" 30 &
+    printf '%s\n' "$!" >"$WORK_DIR/inherited.pid"
+) 9>>"$legacy/resources/profiles.lock"
+old_pid=$(cat "$WORK_DIR/inherited.pid")
+for ((i=0; i<100; i++)); do
+    _service_process_snapshot "$old_pid" "$legacy/bin/mihomo" "$expected" && break
+    sleep 0.01
+done
+_service_process_snapshot "$old_pid" "$legacy/bin/mihomo" "$expected" || fail 'lock-inheriting daemon did not start'
+if flock -n "$legacy/resources/profiles.lock" -c true; then
+    fail 'old daemon did not inherit the subscription lock'
+fi
+legacy_nohup_active=false
+_install_legacy_service_prepare "$legacy" mihomo || fail 'lock-inheriting daemon was not stopped'
+_install_legacy_profiles_lock_acquire "$legacy" legacy-v1 1 || fail 'migration could not acquire the stopped daemon lock'
+_install_legacy_service_restore mihomo || fail 'migration could not restore the old daemon'
+restored_pid=$legacy_nohup_pid
+_service_process_snapshot "$restored_pid" "$legacy/bin/mihomo" "$expected" || fail 'wrong daemon was restored'
+flock -n "$legacy/resources/profiles.lock" -c true || fail 'restored daemon inherited the migration subscription lock'
+kill "$restored_pid"
+wait "$restored_pid" 2>/dev/null || true
+restored_pid=''
+old_pid=''
+
+# 交互 Shell 中已加载的旧订阅写操作无法由 argv 识别；持锁时有界失败并恢复旧内核。
+"$legacy/bin/mihomo" 30 &
+old_pid=$!
+for ((i=0; i<100; i++)); do
+    _service_process_snapshot "$old_pid" "$legacy/bin/mihomo" "$expected" && break
+    sleep 0.01
+done
+_service_process_snapshot "$old_pid" "$legacy/bin/mihomo" "$expected" || fail 'old daemon did not restart'
+(
+    flock -x 9
+    : >"$WORK_DIR/writer-locked"
+    while [ ! -e "$WORK_DIR/writer-release" ]; do sleep 0.01; done
+) 9>>"$legacy/resources/profiles.lock" &
+writer_pid=$!
+for ((i=0; i<100; i++)); do
+    [ ! -e "$WORK_DIR/writer-locked" ] || break
+    sleep 0.01
+done
+[ -e "$WORK_DIR/writer-locked" ] || fail 'old writer did not acquire subscription lock'
+legacy_nohup_active=false
+_install_legacy_service_prepare "$legacy" mihomo || fail 'old daemon was not stopped for writer test'
+if _install_legacy_profiles_lock_acquire "$legacy" legacy-v1 1 >"$WORK_DIR/writer-blocked.out" 2>&1; then
+    fail 'migration accepted a busy legacy subscription lock'
+fi
+_install_legacy_service_restore mihomo || fail 'busy-lock failure did not restore old daemon'
+restored_pid=$legacy_nohup_pid
+_service_process_snapshot "$restored_pid" "$legacy/bin/mihomo" "$expected" || fail 'busy-lock failure lost old daemon'
+[ -d "$legacy/resources" ] || fail 'busy-lock failure moved old installation'
+: >"$WORK_DIR/writer-release"
+wait "$writer_pid" || fail 'old writer failed'
+writer_pid=''
+flock -n "$legacy/resources/profiles.lock" -c true || fail 'failed migration retained the subscription lock'
+kill "$restored_pid"
+wait "$restored_pid" 2>/dev/null || true
+restored_pid=''
+old_pid=''
+
 # 命令行相同但可执行文件不同：不能仅凭 argv 终止无关进程。
 bash -c 'exec -a "$1" /bin/sleep 30' _ "$legacy/bin/mihomo" &
 foreign_pid=$!
@@ -136,6 +207,7 @@ printf 'CLASHCTL_KERNEL=mihomo\n' >"$interrupt_legacy/.env"
 printf 'CLASH_CONFIG_BASE="${CLASH_RESOURCES_DIR}/config.yaml"\nCLASH_PROFILES_DIR="${CLASH_RESOURCES_DIR}/profiles"\n' \
     >"$interrupt_legacy/scripts/lib/common.sh"
 : >"$interrupt_legacy/resources/config.yaml"
+: >"$interrupt_legacy/resources/profiles.lock"
 : >"$interrupt_legacy/uninstall.sh"
 : >"$interrupt_legacy/scripts/lib/service.sh"
 : >"$interrupt_legacy/scripts/cmd/clashctl.sh"
@@ -239,6 +311,7 @@ _service_process_snapshot "$interrupt_restored_pid" "$interrupt_legacy/bin/mihom
     fail 'TERM restored a process other than the old daemon'
 operation_lock_acquire || fail 'interrupted migration retained its operation lock'
 operation_lock_release || fail 'operation lock probe could not release its lock'
+flock -n "$interrupt_legacy/resources/profiles.lock" -c true || fail 'interrupted migration retained old subscription lock'
 kill -TERM "$interrupt_restored_pid" || fail 'could not stop restored daemon'
 for ((i=0; i<100; i++)); do
     _service_process_snapshot "$interrupt_restored_pid" "$interrupt_legacy/bin/mihomo" "$interrupt_expected" || break

@@ -460,9 +460,9 @@ test_update_holds_lifecycle_lock_for_dispatch() {
     . "$REPO_DIR/scripts/cmd/update.sh"
     _ui_error() { :; }
     local CLASHCTL_HOME="$WORK_DIR/update-home"
-    mkdir -p "$CLASHCTL_HOME/.git"
+    mkdir -p "$CLASHCTL_HOME/.git" "$CLASHCTL_HOME/scripts"
     touch "$CLASHCTL_HOME/.env"
-    cp "$REPO_DIR/install.sh" "$CLASHCTL_HOME/install.sh"
+    cp "$REPO_DIR/scripts/install-common.sh" "$CLASHCTL_HOME/scripts/"
     printf '%s\ngit\n' "$CLASHCTL_HOME" >"$CLASHCTL_HOME/.clashctl-install"
     _ui_step() { :; }
     # shellcheck disable=SC2317  # Invoked indirectly by clashupdate.

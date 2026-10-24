@@ -7,6 +7,7 @@ trap 'rm -rf -- "$WORK_DIR"' EXIT
 command -v zsh >/dev/null || { printf 'zsh is required\n' >&2; exit 1; }
 mkdir -p "$WORK_DIR/home/scripts" "$WORK_DIR/home/data/profiles" "$WORK_DIR/home/resources" "$WORK_DIR/bin"
 cp -r "$REPO_DIR/scripts/"{lib,cmd} "$WORK_DIR/home/scripts/"
+printf '1\n' >"$WORK_DIR/home/.clashctl-format"
 printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/home/.env"
 printf 'fixture subscription\n' >"$WORK_DIR/home/data/saved.yaml"
 
@@ -15,7 +16,6 @@ cat >"$WORK_DIR/home/scripts/cmd/zz-fixture.sh" <<'EOF'
 service_is_active() { [ "${NO_SERVICE:-0}" = 0 ]; }
 _node_api_base() { printf 'http://fixture.invalid'; }
 _get_secret() { :; }
-_sub_migrate() { :; }
 _sub_has() { case $1 in '订阅 A' | '订阅 B') return 0 ;; *) return 1 ;; esac; }
 _sub_url_exists() { return 1; }
 _sub_current() { printf '订阅 A'; }

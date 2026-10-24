@@ -13,8 +13,8 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-# shellcheck source=../scripts/lib/install-maintenance.sh
-. "$REPO_DIR/scripts/lib/install-maintenance.sh"
+# shellcheck source=../scripts/install-migration.sh
+. "$REPO_DIR/scripts/install-migration.sh"
 
 legacy="$WORK_DIR/old"
 destination="$WORK_DIR/new installation"
@@ -50,8 +50,8 @@ assert_no_line "0 0 */2 * * $legacy/scripts/cmd/clashctl.sh sub update # clashct
 assert_line "0 0 */2 * * $legacy-other/scripts/cmd/clashctl.sh sub update # clashctl-auto-update"
 assert_line "0 0 */2 * * /bin/bash -c 'clashsub update'"
 assert_line "* * * * * /bin/bash -c 'echo $legacy; echo clashctl sub update'"
-# shellcheck source=../scripts/lib/install-maintenance.sh
-. "$REPO_DIR/scripts/lib/install-maintenance.sh"
+# shellcheck source=../scripts/install-migration.sh
+. "$REPO_DIR/scripts/install-migration.sh"
 [ "$_INSTALL_MAINTENANCE_ACTIVE" = true ] || fail 'sourcing helper lost maintenance state'
 _install_maintenance_restore || fail 'maintenance restore failed'
 cmp -s -- "$cron_file" "$WORK_DIR/original" || fail 'unchanged crontab was not restored exactly'

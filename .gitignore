@@ -9,6 +9,7 @@ data/
 .clashctl-uninitialized
 .clashctl-incomplete
 .clashctl-files
+.clashctl-format
 .env
 bin/
 resources/dist/

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 真实 Bash/Zsh/Fish 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
+# 真实 Bash/Zsh 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
 set -euo pipefail
 REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK_DIR=$(mktemp -d)
@@ -31,18 +31,20 @@ for shell in bash zsh; do
             "$REAL_GIT" -C "$SOURCE_REPO" archive HEAD | tar -x -C "$home_dir"
             _source_manifest "$home_dir" >"$home_dir/.clashctl-files"
         fi
+        printf '1\n' >"$home_dir/.clashctl-format"
         printf '%s\n%s\n' "$home_dir" "$method" >"$home_dir/.clashctl-install"
         printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
     done
 done
 printf 'CLASHCTL_TEST_VERSION=new\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
-printf 'clashfuture() { printf "new-command\\n"; }\n' >"$SOURCE_REPO/scripts/cmd/future.sh"
 printf 'new_helper=true\n' >"$SOURCE_REPO/scripts/new-helper.sh"
 # 目标版本移动私有模块；旧更新器只能依赖稳定入口，不能继续读取旧路径。
 mv "$SOURCE_REPO/scripts/install-common.sh" "$SOURCE_REPO/scripts/source-common.sh"
+mv "$SOURCE_REPO/scripts/install-migration.sh" "$SOURCE_REPO/scripts/source-migration.sh"
 mv "$SOURCE_REPO/scripts/lib/operation-lock.sh" "$SOURCE_REPO/scripts/lib/lifecycle-lock.sh"
 while IFS= read -r -d '' source_file; do
     sed -i -e 's/install-common\.sh/source-common.sh/g' \
+        -e 's/install-migration\.sh/source-migration.sh/g' \
         -e 's/operation-lock\.sh/lifecycle-lock.sh/g' "$source_file"
 done < <(find "$SOURCE_REPO/scripts" -type f -name '*.sh' -print0)
 "$REAL_GIT" -C "$SOURCE_REPO" add .
@@ -85,7 +87,7 @@ for invalid in entry private-file; do
     if [ "$invalid" = entry ]; then
         sed -i 's/^_update_apply_source()/_removed_apply_source()/' "$SOURCE_REPO/scripts/cmd/update.sh"
     else
-        rm "$SOURCE_REPO/uninstall.sh"
+        rm "$SOURCE_REPO/scripts/source-migration.sh"
     fi
     "$REAL_GIT" -C "$SOURCE_REPO" add -A
     "$REAL_GIT" -C "$SOURCE_REPO" commit -qm "invalid-$invalid"
@@ -113,6 +115,7 @@ for shell in bash zsh; do
             clashctl update || exit 1
             [ "$CLASHCTL_TEST_VERSION" = new ] || exit 1
             [ ! -e "$CLASHCTL_HOME/scripts/install-common.sh" ] || exit 1
+            [ ! -e "$CLASHCTL_HOME/scripts/install-migration.sh" ] || exit 1
             [ ! -e "$CLASHCTL_HOME/scripts/lib/operation-lock.sh" ] || exit 1
             # 改名后的目标入口也能再次更新，不能依赖当前 Shell 残留的旧函数。
             bash -c '\''. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update'\'' || exit 1
@@ -127,6 +130,7 @@ for shell in bash zsh; do
         home_dir="$WORK_DIR/$shell-failure-$failure"
         "$REAL_GIT" clone -q "$SOURCE_REPO" "$home_dir"
         "$REAL_GIT" -C "$home_dir" reset --hard -q "$INITIAL_HEAD"
+        printf '1\n' >"$home_dir/.clashctl-format"
         printf '%s\ngit\n' "$home_dir" >"$home_dir/.clashctl-install"
         printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
         mkdir "$home_dir/data"

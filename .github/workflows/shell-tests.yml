@@ -2,7 +2,7 @@ name: Shell tests
 
 on:
   push:
-    branches: [master, install-update]
+    branches: [master, uat, install-update]
   pull_request:
     branches: [master, install-update]
   workflow_dispatch:
@@ -18,10 +18,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # 提取真实已发布 updater，验证更新后的入口顺序。
+          fetch-depth: 0
       - name: Install test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fish zsh
+          sudo apt-get install -y --no-install-recommends fish zsh gcc
           curl -fsSL --retry 3 https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 -o "$RUNNER_TEMP/yq"
           printf '%s  %s\n' fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 "$RUNNER_TEMP/yq" | sha256sum --check --status
           sudo install -m 0755 "$RUNNER_TEMP/yq" /usr/local/bin/yq
@@ -30,4 +32,4 @@ jobs:
       - name: Run regression suite
         run: sudo bash tests/run-all.sh
       - name: Run installation and service tests as a regular user
-        run: bash tests/run-all.sh install-update install-legacy-nohup install-service systemd-user no-subscription
+        run: bash tests/run-all.sh install-update install-migration install-nested-mihomo install-legacy-nohup install-service systemd-user no-subscription

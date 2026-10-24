@@ -19,8 +19,6 @@ _install_method() {
 _install_lock() {
     CLASHCTL_INSTALL_LOCK_LIB="$1/scripts/lib/operation-lock.sh"
     _install_restore_operation_lock || return 1
-    # shellcheck source=/dev/null
-    . "$1/scripts/lib/install-maintenance.sh" || return 1
     operation_lock_acquire
 }
 
@@ -95,11 +93,21 @@ _install_existing_kind() {
     printf 'legacy-v1\n'
 }
 
+_install_format_current() {
+    [ -f "$CLASHCTL_HOME/.clashctl-format" ] && [ ! -L "$CLASHCTL_HOME/.clashctl-format" ] &&
+        [ "$(cat -- "$CLASHCTL_HOME/.clashctl-format")" = 1 ]
+}
 
 _install_apply_update() {
     local stage=$1 method=$2 target=$3 work=$4
-    if [ "$method" = git ]; then _update_git_checkout "$target" "$work";
-    else _update_archive "$stage" "$work"; fi
+    if [ -e "$CLASHCTL_HOME/.clashctl-uninitialized" ] ||
+        _install_format_current; then
+        if [ "$method" = git ]; then _update_git_checkout "$target" "$work";
+        else _update_archive "$stage" "$work"; fi
+    else
+        . "$stage/scripts/install-migration.sh" || return 1
+        _install_migrate_current "$stage" "$method" "$target" "$work"
+    fi
 }
 
 # 跨版本只调用稳定更新入口；私有模块的位置和应用过程由目标版本决定。
@@ -177,7 +185,7 @@ _source_validate() {
 _install_validate_source() {
     local directory=$1 file
     _source_validate "$directory" || return 1
-    for file in .env.example uninstall.sh scripts/preflight.sh scripts/install-common.sh scripts/lib/install-maintenance.sh scripts/lib/operation-lock.sh scripts/cmd/clashctl.sh; do
+    for file in .env.example uninstall.sh scripts/preflight.sh scripts/install-common.sh scripts/install-migration.sh scripts/lib/operation-lock.sh scripts/cmd/clashctl.sh; do
         if [ ! -f "$directory/$file" ] || [ -L "$directory/$file" ]; then
             printf '源码不兼容：缺少必需文件 %s\n' "$file" >&2
             return 1
@@ -248,6 +256,7 @@ _update_git_checkout() (
     trap 'exit 129' HUP
     started=true
     git -C "$CLASHCTL_HOME" checkout --detach -q "$target" || return 1
+    [ "${_INSTALL_UPDATE_FINISH:-}" != 1 ] || _install_migration_finish || return 1
     complete=true
 )
 
@@ -326,5 +335,6 @@ _update_archive() (
     for file in "${old_files[@]}"; do
         [ "${new_set[$file]:-}" = 1 ] || rm -f -- "$CLASHCTL_HOME/$file" || return 1
     done
+    [ "${_INSTALL_UPDATE_FINISH:-}" != 1 ] || _install_migration_finish || return 1
     complete=true
 )

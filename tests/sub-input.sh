@@ -6,9 +6,9 @@ WORK_DIR=$(mktemp -d)
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 mkdir -p "$WORK_DIR/home/scripts" "$WORK_DIR/user"
 cp -r "$REPO_DIR/scripts/"{lib,cmd} "$WORK_DIR/home/scripts/"
+printf '1\n' >"$WORK_DIR/home/.clashctl-format"
 printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/home/.env"
 cat >"$WORK_DIR/home/scripts/cmd/zz-fixture.sh" <<'EOF'
-_sub_migrate() { :; }
 _sub_url_exists() { return 1; }
 _sub_download() {
     printf '%s' "$1" >"$CLASHCTL_HOME/received"

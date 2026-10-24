@@ -19,6 +19,9 @@ HOME_DIR="$WORK_DIR/home"
 mkdir -p "$HOME_DIR/scripts"
 cp -r "$REPO_DIR/scripts/lib" "$HOME_DIR/scripts/lib"
 cp -r "$REPO_DIR/scripts/cmd" "$HOME_DIR/scripts/cmd"
+# 正常加载和安装环境加载都必须跳过旧更新器占位文件。
+printf 'return 95\n' >"$HOME_DIR/scripts/lib/install-maintenance.sh"
+printf '1\n' >"$HOME_DIR/.clashctl-format"
 : >"$HOME_DIR/.env"
 printf 'CLASHCTL_KERNEL=mihomo\n' >>"$HOME_DIR/.env"
 
@@ -29,6 +32,17 @@ export INIT_TYPE=nohup
 # 加载库时 common.sh 会请求系统 yq；无副作用，保持安静。
 # shellcheck source=/dev/null
 . "$HOME_DIR/scripts/cmd/clashctl.sh"
+for helper in _install_migrate_current _install_method _install_maintenance_begin; do
+    if declare -F "$helper" >/dev/null; then
+        fail "normal command loading included installation helper: $helper"
+    fi
+done
+(
+    . "$REPO_DIR/scripts/preflight.sh"
+    if declare -F _install_maintenance_begin >/dev/null; then
+        fail 'preflight loaded old task migration functions'
+    fi
+)
 
 # 1) 每个公开子命令都必须有 clashXXX 函数
 for sub in on off start stop status ui sub node tun mixin secret log upgrade update version help; do
@@ -166,8 +180,8 @@ for state in clean dirty; do
 done
 
 # 不丢失 nightly 提交标识，并兼容 Clash 与旧版 Clash Meta 的输出。
-mkdir -p "$HOME_DIR/bin/clash"
-cp "$HOME_DIR/bin/mihomo" "$HOME_DIR/bin/clash/clash"
+mkdir -p "$HOME_DIR/bin"
+cp "$HOME_DIR/bin/mihomo" "$HOME_DIR/bin/clash"
 for flavor in nightly clash meta; do
     case $flavor in
     nightly) kernel=mihomo; banner='Mihomo Meta alpha-abcdef linux amd64 with go1.26.8'; expected='mihomo alpha-abcdef' ;;

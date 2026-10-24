@@ -24,7 +24,6 @@ clashsub() {
         return
     fi
 
-    _sub_migrate
 
     case "${1:-}" in
     add)
@@ -309,39 +308,6 @@ _sub_filename() {
         path="${CLASH_PROFILES_DIR}/${safe}-${n}.yaml"
     done
     printf '%s' "$path"
-}
-
-# 一次性把旧的数字 id 模型迁移为 name 模型（幂等：以 id 字段存在为哨兵）
-_sub_migrate() {
-    [ -f "$CLASH_PROFILES_META" ] || return 0
-    "$BIN_YQ" -e '([.profiles // [] | .[] | select(has("id"))] | length) > 0' \
-        "$CLASH_PROFILES_META" >/dev/null 2>&1 || return 0
-
-    local count i url name
-    count=$("$BIN_YQ" '.profiles // [] | length' "$CLASH_PROFILES_META")
-    for ((i = 0; i < count; i++)); do
-        IDX=$i "$BIN_YQ" -e '.profiles[env(IDX)] | has("name")' "$CLASH_PROFILES_META" >/dev/null 2>&1 && continue
-        url=$(IDX=$i "$BIN_YQ" '.profiles[env(IDX)].url // ""' "$CLASH_PROFILES_META")
-        name=$(_sub_unique_name "$(_sub_default_name "$url")")
-        IDX=$i PROFILE_NAME=$name "$BIN_YQ" -i '.profiles[env(IDX)].name = strenv(PROFILE_NAME)' "$CLASH_PROFILES_META"
-    done
-
-    # 顶层 use 若是旧的数字 id，映射为对应 name
-    local use mapped
-    use=$("$BIN_YQ" '.use // "" | tostring' "$CLASH_PROFILES_META")
-    if [ -n "$use" ] && [[ "$use" =~ ^[0-9]+$ ]]; then
-        mapped=$(PROFILE_ID=$use "$BIN_YQ" \
-            '.profiles // [] | .[] | select((.id // "" | tostring) == strenv(PROFILE_ID)) | .name // ""' \
-            "$CLASH_PROFILES_META" | head -n1)
-        if [ -n "$mapped" ]; then
-            PROFILE_NAME=$mapped "$BIN_YQ" -i '.use = strenv(PROFILE_NAME)' "$CLASH_PROFILES_META"
-        else
-            "$BIN_YQ" -i '.use = ""' "$CLASH_PROFILES_META"
-        fi
-    fi
-
-    "$BIN_YQ" -i 'del(.profiles[].id)' "$CLASH_PROFILES_META"
-    _logging_sub "🔄 已将订阅数据迁移为 name 模式"
 }
 
 ########################################

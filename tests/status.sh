@@ -10,6 +10,7 @@ done
 export CLASHCTL_HOME="$WORK_DIR/home"
 mkdir -p "$CLASHCTL_HOME/"{scripts,bin,data} "$WORK_DIR/user"
 cp -r "$REPO_DIR/scripts/"{lib,cmd} "$CLASHCTL_HOME/scripts/"
+printf '1\n' >"$CLASHCTL_HOME/.clashctl-format"
 printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$CLASHCTL_HOME/.env"
 
 cat >"$CLASHCTL_HOME/scripts/lib/zz-fixture.sh" <<'EOF'

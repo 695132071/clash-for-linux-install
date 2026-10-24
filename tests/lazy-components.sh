@@ -67,6 +67,7 @@ for shell in bash zsh; do
     mkdir -p "$home_dir/bin" "$home_dir/resources" "$home_dir/data"
     # Zsh 转发到 Bash 时会重新加载脚本，模拟函数也必须随之加载。
     cp -a "$REPO_DIR/scripts" "$home_dir/scripts"
+    printf '1\n' >"$home_dir/.clashctl-format"
     cat >"$home_dir/scripts/cmd/zz-fixture.sh" <<'STUB'
 _detect_ext_addr() { EXT_IP=127.0.0.1; EXT_PORT=9090; }
 service_is_active() { touch "$CLASHCTL_HOME/service-queried"; }

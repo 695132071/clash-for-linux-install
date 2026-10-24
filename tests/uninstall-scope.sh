@@ -133,7 +133,7 @@ if run_uninstall "$WORK_DIR/invalid"; then fail 'environment redirected uninstal
 # 正常安装：使用 .env 的 clash 而非父进程 mihomo；停服务失败时全部保留。
 setup_install "$WORK_DIR/installed"
 printf 'CLASHCTL_KERNEL=clash\nINIT_TYPE=systemd\n' >"$WORK_DIR/installed/.env"
-printf 'ExecStart=%s/bin/clash/clash -d %s/resources -f %s/data/runtime.yaml\n' "$WORK_DIR/installed" "$WORK_DIR/installed" "$WORK_DIR/installed" >"$WORK_DIR/installed/service.unit"
+printf 'ExecStart=%s/bin/clash -d %s/resources -f %s/data/runtime.yaml\n' "$WORK_DIR/installed" "$WORK_DIR/installed" "$WORK_DIR/installed" >"$WORK_DIR/installed/service.unit"
 write_rc "$WORK_DIR/installed"
 touch "$UNINSTALL_ACTIVE"
 if FAIL_STOP=1 run_uninstall "$WORK_DIR/installed"; then fail 'failed service stop was ignored'; fi

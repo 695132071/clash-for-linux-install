@@ -22,14 +22,9 @@ CLASH_RESOURCES_DIR="${CLASHCTL_HOME}/resources"
 BIN_BASE_DIR="${CLASHCTL_HOME}/bin"
 # fish 托管块首行标记：写入/识别/清理共用（preflight.sh 的 revoke 同引此量）
 CLASHCTL_FISH_MANAGED_MARKER='# clashctl shell-rc (managed by install.sh, do not edit)'
-# 内核二进制路径，安装和运行共用；已有嵌套布局沿用原路径。
+# 安装侧完成布局迁移后，业务只使用平坦路径。
 bin_kernel_path() {
-    local kernel=${CLASHCTL_KERNEL:-mihomo}
-    if [ "$kernel" = mihomo ] && [ ! -d "$BIN_BASE_DIR/mihomo" ]; then
-        printf '%s/mihomo\n' "$BIN_BASE_DIR"
-        return
-    fi
-    printf '%s/%s/%s\n' "$BIN_BASE_DIR" "$kernel" "$kernel"
+    printf '%s/%s\n' "$BIN_BASE_DIR" "${CLASHCTL_KERNEL:-mihomo}"
 }
 BIN_KERNEL=$(bin_kernel_path)
 BIN_YQ="${BIN_BASE_DIR}/yq"
@@ -457,10 +452,6 @@ _append_source_block() {
         /^# >>> clashctl >>>$/ { managed=1; next }
         /^# <<< clashctl <<<$/{ managed=0; next }
         managed { next }
-        # 同时清除旧版（master 时代）遗留的裸引导行与历史导出
-        /^export CLASHCTL_HOME=/ { next }
-        /^\. \$CLASHCTL_HOME\/scripts\/cmd\/clashctl\.sh$/ { next }
-        /^\[ -s "\$CLASHCTL_HOME\/scripts\/cmd\/clashctl\.sh" \]/ { next }
         { print }
     ' "$rc" >"$tmp" || {
         command rm -f -- "$tmp"

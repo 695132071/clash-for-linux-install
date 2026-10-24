@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 
 # 已安装时存在；install.sh 首跑物化前（依赖下载阶段）暂缺
-if [ -f "$CLASHCTL_SRC/.env" ]; then
-    . "$CLASHCTL_SRC/.env" || return 1
+if [ -f "$CLASHCTL_HOME/.env" ]; then
+    . "$CLASHCTL_HOME/.env" || return 1
 fi
 
 for lib_file in "$CLASHCTL_SRC"/scripts/lib/*.sh; do
+    # 旧更新器要求保留的空占位文件无需加载。
+    [ "${lib_file##*/}" != install-maintenance.sh ] || continue
     [ -f "$lib_file" ] || continue
     # shellcheck disable=SC1090
     . "$lib_file"

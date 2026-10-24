@@ -71,25 +71,11 @@ mkdir "$BIN_BASE_DIR/mihomo"
 make_program "$BIN_BASE_DIR/mihomo/mihomo" v1.18.0
 printf 'keep-parent-content\n' >"$BIN_BASE_DIR/mihomo/other-file"
 BIN_KERNEL=$(bin_kernel_path)
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'existing nested program path was not retained'
+[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo" ] || fail 'runtime retained the old nested path'
 make_archive amd64-v3 v1.19.32
-prepare || { cat "$WORK_DIR/output"; fail 'existing nested program was not reused'; }
-assert_version v1.18.0
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'reusing the nested program changed its path'
-[ -f "$ZIP_BASE_DIR/mihomo-linux-amd64-v3-v1.19.32.gz" ] || fail 'reusing the nested program removed the local archive'
-[ "$(<"$BIN_BASE_DIR/mihomo/other-file")" = keep-parent-content ] || fail 'reusing the nested program modified its parent contents'
-assert_no_network
-
-# 需要替换程序时仍写回原嵌套路径，不替换或清空其父目录。
-ZIP_KERNEL_LOCAL=1 VERSION_MIHOMO=v1.19.32 \
-    _install_component kernel "$ZIP_BASE_DIR/mihomo-linux-amd64-v3-v1.19.32.gz" >"$WORK_DIR/output" 2>&1 || {
-    cat "$WORK_DIR/output"
-    fail 'component replacement failed at the existing nested path'
-}
-assert_version v1.19.32
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'component replacement changed the nested program path'
-[ -d "$BIN_BASE_DIR/mihomo" ] || fail 'component replacement removed the nested parent directory'
-[ "$(<"$BIN_BASE_DIR/mihomo/other-file")" = keep-parent-content ] || fail 'component replacement removed other files in the nested parent'
+if prepare; then fail 'component installer bypassed the installation migration'; fi
+[ -f "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'component installer changed the old kernel'
+[ "$(<"$BIN_BASE_DIR/mihomo/other-file")" = keep-parent-content ] || fail 'component installer removed user files'
 assert_no_network
 
 setup ambiguous

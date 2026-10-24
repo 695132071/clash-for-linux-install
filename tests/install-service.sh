@@ -168,7 +168,7 @@ PY
     for invalid_option in '--service' '--service=' '--service=invalid' '--service systemd'; do
         rm -f "$WORK_DIR/parameter-result"
         # shellcheck disable=SC2086  # 故意验证缺失值与分离值参数。
-        if main --local --home "$installed" $invalid_option >"$WORK_DIR/invalid.out" 2>&1; then
+        if main --home "$installed" $invalid_option >"$WORK_DIR/invalid.out" 2>&1; then
             fail "invalid service parameter was accepted: $invalid_option"
         fi
         [ ! -e "$WORK_DIR/parameter-result" ] || fail 'invalid parameter reached initialization'
@@ -295,6 +295,7 @@ INIT_TYPE='' service_manager=''
 [ ! -f "$CLASHCTL_HOME/.env" ] || . "$CLASHCTL_HOME/.env"
 CLASH_DATA_DIR="$CLASHCTL_HOME/data"
 CLASH_PROFILES_DIR="$CLASH_DATA_DIR/profiles"
+CLASH_PROFILES_META="$CLASH_DATA_DIR/profiles.yaml"
 CLASH_RESOURCES_DIR="$CLASHCTL_HOME/resources"
 CLASH_CONFIG_BASE="$CLASH_DATA_DIR/config.yaml"
 CLASH_CONFIG_MIXIN="$CLASH_DATA_DIR/mixin.yaml"
@@ -302,6 +303,7 @@ CLASH_CONFIG_RUNTIME="$CLASH_DATA_DIR/runtime.yaml"
 CLASHCTL_DOWNLOAD_TIMEOUT=${CLASHCTL_DOWNLOAD_TIMEOUT:-60}
 BIN_YQ=fixture_yq
 fixture_yq() {
+    [ "${1:-}" != -e ] || return 1
     case "$1" in
     '.mode // "rule"')
         if [ -s "$CLASH_CONFIG_BASE" ]; then printf 'rule\n'; else printf 'direct\n'; fi
@@ -367,6 +369,7 @@ for scenario in 'new-auto auto none 1 0 systemd-user 0' 'new-fallback auto none 
     initialize_home="$WORK_DIR/$case_name"
     mkdir -p "$initialize_home/scripts/cmd" "$initialize_home/resources" "$initialize_home/data"
     cp "$WORK_DIR/preflight.fixture" "$initialize_home/scripts/preflight.sh"
+    cp "$REPO_DIR/scripts/install-migration.sh" "$initialize_home/scripts/"
     cp "$REPO_DIR/.env.example" "$initialize_home/"
     cp "$REPO_DIR/resources/"{mixin.yaml.example,profiles.yaml} "$initialize_home/resources/"
     cat >"$initialize_home/scripts/cmd/clashctl.sh" <<'LOADER'
@@ -389,6 +392,9 @@ LOADER
         [ "$migrating" -eq 0 ] || backup_arg="$WORK_DIR/legacy-backup"
         subscription_arg=''
         [ "$subscribing" != yes ] || subscription_arg=https://example.invalid/install-subscription
+        # These scenarios model a running legacy service; offline state is covered separately.
+        legacy_nohup_active=true legacy_service_active=false legacy_service_enabled=true
+        detect_rc() { SHELL_RC_BASH='' SHELL_RC_ZSH='' SHELL_RC_FISH=''; }
         _install_initialize mihomo master '' '' '' "$backup_arg" "$subscription_arg" "$requested"
         _install_next_step bash >"$initialize_home/footer" 2>&1
         [ "$migrating" -eq 0 ] || [ "${service_switch_pending:-false}" = false ] ||
@@ -397,6 +403,7 @@ LOADER
         cat "$initialize_home/output" >&2
         fail "actual initialization failed: $case_name"
     }
+    [ -f "$initialize_home/.env" ] || { cat "$initialize_home/output" >&2; fail "missing env: $case_name"; }
     bash -c '. "$1"; [ "$INIT_TYPE" = "$2" ]' _ "$initialize_home/.env" "$expected" ||
         fail "initialization did not persist selected backend: $case_name"
     [ -e "$initialize_home/data/registered-$expected" ] || fail "initialization did not register backend: $case_name"
@@ -409,8 +416,12 @@ LOADER
         [ -e "$initialize_home/data/enabled-$expected" ] || fail "initialization did not enable autostart: $case_name"
     fi
     if [ "$expected" = systemd-user ] && [ "$tun" -eq 0 ]; then
-        grep -Fq '已注册 systemd --user 服务' "$initialize_home/output" || fail 'user installation omitted registration result'
-        grep -Fq '已设置登录自启' "$initialize_home/output" || fail 'user installation omitted login startup result'
+        if [ "$migrating" -eq 0 ]; then
+            grep -Fq '已注册 systemd --user 服务' "$initialize_home/output" || fail 'user installation omitted registration result'
+            grep -Fq '已设置登录自启' "$initialize_home/output" || fail 'user installation omitted login startup result'
+        else
+            grep -Fq '已保留原服务运行与自启设置' "$initialize_home/output" || fail 'migration omitted preserved state'
+        fi
         ! grep -q 'loginctl enable-linger' "$initialize_home/output" || fail 'linger command appeared before completion'
         [ "$(grep -c 'sudo loginctl enable-linger' "$initialize_home/footer")" -eq 1 ] || fail 'footer omitted or repeated linger command'
         grep -q '按需设置（需管理员权限）:' "$initialize_home/footer" || fail 'linger omitted administrator context'
