@@ -142,6 +142,7 @@ PY
     _install_lock() { :; }
     _install_method() { printf 'archive\n'; }
     _install_intro() { :; }
+    _install_refresh_current() { :; }  # 此 fixture 只验证参数传递，不执行源码更新。
     _install_maintenance_finish() { :; }
     _install_complete() { :; }
     _install_main_cleanup() { :; }
@@ -152,7 +153,7 @@ PY
             : >"$installed/.clashctl-incomplete"
             args=("--service=$value")
             [ "$form" != separate ] || args=(--service "$value")
-            main --home "$installed" "${args[@]}" >"$WORK_DIR/parameter.out" 2>&1 || {
+            main --local --home "$installed" "${args[@]}" >"$WORK_DIR/parameter.out" 2>&1 || {
                 cat "$WORK_DIR/parameter.out" >&2
                 fail "service parameter rejected: $value ($form)"
             }
@@ -161,13 +162,13 @@ PY
         done
     done
     : >"$installed/.clashctl-incomplete"
-    main --home "$installed" >"$WORK_DIR/default.out" 2>&1 || fail 'default service parameter failed'
+    main --local --home "$installed" >"$WORK_DIR/default.out" 2>&1 || fail 'default service parameter failed'
     [ "$(cat "$WORK_DIR/parameter-result")" = auto ] || fail 'default service request is not auto'
 
     for invalid_option in '--service' '--service=' '--service=invalid' '--service systemd'; do
         rm -f "$WORK_DIR/parameter-result"
         # shellcheck disable=SC2086  # 故意验证缺失值与分离值参数。
-        if main --home "$installed" $invalid_option >"$WORK_DIR/invalid.out" 2>&1; then
+        if main --local --home "$installed" $invalid_option >"$WORK_DIR/invalid.out" 2>&1; then
             fail "invalid service parameter was accepted: $invalid_option"
         fi
         [ ! -e "$WORK_DIR/parameter-result" ] || fail 'invalid parameter reached initialization'

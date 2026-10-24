@@ -13,6 +13,11 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+saved_options() {
+    bash -c '. "$1/.env"; printf "%s|%s|%s" "$CLASHCTL_KERNEL" "$CLASHCTL_UPDATE_BRANCH" "$GH_PROXY"' _ "$1"
+}
+saved_timeout() { bash -c '. "$1/.env"; printf "%s" "$CLASHCTL_DOWNLOAD_TIMEOUT"' _ "$1"; }
+
 retry_command_from_output() {
     awk '/^重试:$/ {
         if ((getline) > 0 && /^  /) {
@@ -1345,6 +1350,136 @@ cp "$SOURCE_ARCHIVE" "$destination"
 DOWNLOAD
 chmod +x "$no_git_bin/curl"
 cp "$no_git_bin/curl" "$no_git_bin/wget"
+# 已安装本版的安装器只负责取源，目标版本可以重排私有模块而不保留旧文件名。
+# 独立仓库避免影响下方对主 fixture 的损坏、回滚及来源安全检查。
+(
+    export FIXTURE="$WORK_DIR/handoff-source" SOURCE_ARCHIVE="$WORK_DIR/handoff-source.tar.gz"
+    mkdir "$FIXTURE"
+    "$REAL_GIT" -C "$WORK_DIR/source" archive iu | tar -x -C "$FIXTURE"
+    "$REAL_GIT" -C "$FIXTURE" init -q -b handoff-old
+    "$REAL_GIT" -C "$FIXTURE" config user.email test@example.invalid
+    "$REAL_GIT" -C "$FIXTURE" config user.name test
+    "$REAL_GIT" -C "$FIXTURE" add .
+    "$REAL_GIT" -C "$FIXTURE" commit -qm old-installer-layout
+    "$REAL_GIT" -C "$FIXTURE" archive --prefix=source/ HEAD | gzip >"$SOURCE_ARCHIVE"
+    cp "$FIXTURE/install.sh" "$WORK_DIR/handoff-old-install.sh"
+    for method in git archive; do
+        handoff_path="$PATH"
+        [ "$method" != archive ] || handoff_path=$no_git_bin
+        for entry in file pipe; do
+            handoff_home="$WORK_DIR/handoff-$method-$entry"
+            PATH="$handoff_path" CLASHCTL_HOME="$handoff_home" \
+                bash "$FIXTURE/install.sh" --branch handoff-old --gh-proxy= --service nohup \
+                >"$WORK_DIR/handoff-initial.out" 2>&1 ||
+                { cat "$WORK_DIR/handoff-initial.out"; fail 'could not prepare old installer layout'; }
+            printf 'preserved user data\n' >"$handoff_home/data/private"
+            printf "PRESERVED_HANDOFF_VALUE='user setting'\n" >>"$handoff_home/.env"
+        done
+    done
+    "$REAL_GIT" -C "$FIXTURE" checkout -qb handoff-next
+    python3 - "$FIXTURE" <<'RELAYOUT'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1])
+renames = {
+    'scripts/install-common.sh': 'scripts/upgrade-next/common.sh',
+    'scripts/lib/operation-lock.sh': 'scripts/lib/lifecycle-lock.sh',
+}
+for script in source.rglob('*.sh'):
+    text = script.read_text()
+    for old, new in renames.items():
+        text = text.replace(old, new)
+    script.write_text(text)
+for old, new in renames.items():
+    destination = source / new
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    (source / old).rename(destination)
+installer = source / 'install.sh'
+text = installer.read_text()
+first, rest = text.split('\n', 1)
+installer.write_text(first + '\n' +
+    'if [ -n "${HANDOFF_ARGV_LOG:-}" ]; then printf \'%s\\0\' "$@" >>"$HANDOFF_ARGV_LOG"; fi\n' + rest)
+RELAYOUT
+    "$REAL_GIT" -C "$FIXTURE" add -A
+    "$REAL_GIT" -C "$FIXTURE" commit -qm relocated-installer-modules
+    "$REAL_GIT" -C "$FIXTURE" archive --prefix=source/ HEAD | gzip >"$SOURCE_ARCHIVE"
+    for method in git archive; do
+        handoff_path="$PATH"
+        [ "$method" != archive ] || handoff_path=$no_git_bin
+        for entry in file pipe; do
+            handoff_home="$WORK_DIR/handoff-$method-$entry"
+            handoff_ignored="$WORK_DIR/handoff-ignored-$method-$entry"
+            handoff_log="$WORK_DIR/handoff-$method-$entry.argv"
+            handoff_sub='file:///handoff?token=a&name=two words'
+            handoff_args=(--home "$handoff_home" --branch=handoff-next --kernel mihomo
+                --gh-proxy '' --sub "$handoff_sub" --service=nohup --verbose)
+            printf '%s\0' "${handoff_args[@]}" >"$WORK_DIR/handoff-expected.argv"
+            handoff_command=(bash "$handoff_home/install.sh" "${handoff_args[@]}")
+            if [ "$entry" = pipe ]; then
+                handoff_command=(bash -c 'cat "$1" | bash -s -- "${@:2}"'
+                    _ "$WORK_DIR/handoff-old-install.sh" "${handoff_args[@]}")
+            fi
+            PATH="$handoff_path" CLASHCTL_HOME="$handoff_ignored" GH_PROXY=https://ignored.proxy.test \
+                CLASHCTL_UPDATE_BRANCH=legacy CLASHCTL_DOWNLOAD_TIMEOUT=19 HANDOFF_ARGV_LOG="$handoff_log" \
+                "${handoff_command[@]}" >"$WORK_DIR/handoff-upgrade.out" 2>&1 ||
+                { cat "$WORK_DIR/handoff-upgrade.out"; fail "$method $entry installer did not hand off to the target"; }
+            cmp "$WORK_DIR/handoff-expected.argv" "$handoff_log" || fail 'installer handoff changed or replayed argv'
+            for old_file in scripts/install-common.sh scripts/lib/operation-lock.sh; do
+                [ ! -e "$handoff_home/$old_file" ] || fail 'target retained an obsolete private module'
+            done
+            for new_file in scripts/upgrade-next/common.sh scripts/lib/lifecycle-lock.sh; do
+                [ -f "$handoff_home/$new_file" ] || fail 'installer did not deploy the target private module'
+            done
+            [ "$(saved_options "$handoff_home")" = 'mihomo|handoff-next|' ] || fail 'handoff lost branch or explicit empty proxy'
+            [ "$(saved_timeout "$handoff_home")" = 19 ] || fail 'handoff lost the requested download timeout'
+            [ "$(cat "$handoff_home/data/subscription")" = "$handoff_sub" ] || fail 'handoff changed the explicit subscription'
+            [ "$(cat "$handoff_home/data/private")" = 'preserved user data' ] || fail 'handoff changed existing user data'
+            [ "$(cat "$handoff_home/bin/kernel")" = kernel ] || fail 'handoff changed the installed core'
+            [ -f "$handoff_home/data/started" ] || fail 'handoff did not activate the explicit subscription'
+            bash -c '. "$1/.env"; [ "$INIT_TYPE" = nohup ] && [ "$PRESERVED_HANDOFF_VALUE" = "user setting" ]' _ "$handoff_home" ||
+                fail 'handoff lost service selection or user settings'
+            [ ! -e "$handoff_ignored" ] || fail 'handoff lost the explicit installation directory'
+            [ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name "handoff-$method-$entry.download.*" -print -quit)" ] ||
+                fail 'installer handoff retained prepared source'
+        done
+    done
+    # 模块加载失败发生在目标入口接管后，外层仍须清理预备源码且不修改安装。
+    handoff_home="$WORK_DIR/handoff-git-pipe"
+    tar -cf "$WORK_DIR/handoff-installation.before.tar" -C "$handoff_home" .
+    cp "$TEST_CRONTAB" "$WORK_DIR/handoff-crontab.before"
+    "$REAL_GIT" -C "$FIXTURE" checkout -qb handoff-load-failed handoff-next
+    printf 'return 93 # 目标自己的模块加载失败。\n' >"$FIXTURE/scripts/upgrade-next/common.sh"
+    "$REAL_GIT" -C "$FIXTURE" commit -qam target-module-load-failed
+    handoff_log="$WORK_DIR/handoff-load-failed.argv"
+    if CLASHCTL_HOME="$handoff_home" HANDOFF_ARGV_LOG="$handoff_log" \
+        bash -c 'cat "$1" | bash -s -- --home "$2" --branch handoff-load-failed --gh-proxy=' \
+        _ "$WORK_DIR/handoff-old-install.sh" "$handoff_home" >"$WORK_DIR/handoff-load-failed.out" 2>&1; then
+        fail 'handoff accepted a failed target module load'
+    fi
+    [ -s "$handoff_log" ] || { cat "$WORK_DIR/handoff-load-failed.out"; fail 'target module failure did not reach the target installer'; }
+    tar -df "$WORK_DIR/handoff-installation.before.tar" -C "$handoff_home" || fail 'target module failure changed the installation'
+    cmp "$WORK_DIR/handoff-crontab.before" "$TEST_CRONTAB" || fail 'target module failure changed scheduled tasks'
+    [ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'handoff-git-pipe.download.*' -print -quit)" ] ||
+        fail 'target module load failure retained prepared source'
+    # Git 自举与归档一样，须在执行目标入口前拒绝内部链接。
+    "$REAL_GIT" -C "$FIXTURE" checkout -qb handoff-symlink handoff-next
+    ln -s upgrade-next/common.sh "$FIXTURE/scripts/bootstrap-link.sh"
+    "$REAL_GIT" -C "$FIXTURE" add scripts/bootstrap-link.sh
+    "$REAL_GIT" -C "$FIXTURE" commit -qm source-with-internal-symlink
+    handoff_log="$WORK_DIR/handoff-symlink.argv"
+    if CLASHCTL_HOME="$handoff_home" HANDOFF_ARGV_LOG="$handoff_log" \
+        bash -c 'cat "$1" | bash -s -- --home "$2" --branch handoff-symlink --gh-proxy=' \
+        _ "$WORK_DIR/handoff-old-install.sh" "$handoff_home" >"$WORK_DIR/handoff-symlink.out" 2>&1; then
+        fail 'Git bootstrap accepted an internal source symlink'
+    fi
+    [ ! -e "$handoff_log" ] || fail 'Git bootstrap executed the target before rejecting the symlink'
+    grep -Fq 'scripts/bootstrap-link.sh' "$WORK_DIR/handoff-symlink.out" ||
+        { cat "$WORK_DIR/handoff-symlink.out"; fail 'Git bootstrap did not diagnose the source symlink'; }
+    tar -df "$WORK_DIR/handoff-installation.before.tar" -C "$handoff_home" || fail 'rejected source symlink changed the installation'
+    cmp "$WORK_DIR/handoff-crontab.before" "$TEST_CRONTAB" || fail 'rejected source symlink changed scheduled tasks'
+    [ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'handoff-git-pipe.download.*' -print -quit)" ] ||
+        fail 'rejected source symlink retained prepared source'
+)
 archive_source="$WORK_DIR/archive-source"
 mkdir "$archive_source"
 "$REAL_GIT" -C "$FIXTURE" archive HEAD | tar -x -C "$archive_source"

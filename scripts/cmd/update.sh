@@ -3,6 +3,13 @@
 # shellcheck disable=SC1091  # 独立 source（测试）时补载依赖；经 clashctl.sh 加载时已存在。
 declare -F _clashctl_run_in_bash >/dev/null 2>&1 || . "${BASH_SOURCE[0]%/*}/../lib/shell.sh"
 
+# 下载后的源码由本版本入口接管，旧更新器无需知道私有模块的位置。
+_update_apply_source() {
+    . "$1/scripts/install-common.sh" || return 1
+    _install_validate_source "$1" || return 1
+    _install_apply_update "$@"
+}
+
 clashupdate() {
     case ${1:-} in
     -h | --help)
@@ -40,8 +47,7 @@ _update_scripts() (
     trap 'exit 129' HUP
     operation_lock_acquire || return 1
     [ -f "$CLASHCTL_HOME/.env" ] || { _ui_error '未找到安装配置'; return 1; }
-    # 复用安装入口中的源码下载与检查，不执行初始化。
-    # shellcheck source=/dev/null  # 只加载函数，安装入口有执行保护。
+    # 从本次源码加载共用函数，不依赖安装入口。
     install_source=${CLASHCTL_INSTALL_LOCK_LIB:-}
     if [ -n "$install_source" ]; then
         install_source=${install_source%/scripts/lib/operation-lock.sh}
@@ -49,7 +55,6 @@ _update_scripts() (
         install_source=$CLASHCTL_HOME
     fi
     # shellcheck source=/dev/null
-    . "$install_source/install.sh" || return 1
     . "$install_source/scripts/install-common.sh" || return 1
     method=$(_install_method "$(cd -- "$CLASHCTL_HOME" && pwd -P)") || {
         _ui_error '缺少匹配的安装标记，已停止更新'
@@ -80,9 +85,5 @@ _update_scripts() (
     fi
     [ ! -e "$stage/.git" ] && [ ! -L "$stage/.git" ] || return 1
     _source_validate "$stage" || return 1
-    if [ "$method" = git ]; then
-        _update_git_checkout "$target" "$work" || return 1
-    else
-        _update_archive "$stage" "$work"
-    fi
+    _source_apply_update "$stage" "$method" "${target:-}" "$work"
 )

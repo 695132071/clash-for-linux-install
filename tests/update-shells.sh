@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 真实 Bash/Zsh 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
+# 真实 Bash/Zsh/Fish 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
 set -euo pipefail
 REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK_DIR=$(mktemp -d)
@@ -11,6 +11,8 @@ REAL_GIT=$(command -v git)
 mkdir -p "$SOURCE_REPO" "$WORK_DIR/bin"
 cp -a "$REPO_DIR/scripts" "$SOURCE_REPO/"
 cp "$REPO_DIR/"{install.sh,uninstall.sh,.env.example,.gitignore} "$SOURCE_REPO/"
+# 安装入口即使有效但不能被执行，脚本更新也应只加载共用库。
+printf 'printf "unexpected installer load\\n" >&2; exit 95\n' >"$SOURCE_REPO/install.sh"
 printf 'CLASHCTL_TEST_VERSION=old\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
 "$REAL_GIT" -C "$SOURCE_REPO" init -q -b master
 "$REAL_GIT" -C "$SOURCE_REPO" config user.email test@example.invalid
@@ -34,7 +36,15 @@ for shell in bash zsh; do
     done
 done
 printf 'CLASHCTL_TEST_VERSION=new\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
+printf 'clashfuture() { printf "new-command\\n"; }\n' >"$SOURCE_REPO/scripts/cmd/future.sh"
 printf 'new_helper=true\n' >"$SOURCE_REPO/scripts/new-helper.sh"
+# 目标版本移动私有模块；旧更新器只能依赖稳定入口，不能继续读取旧路径。
+mv "$SOURCE_REPO/scripts/install-common.sh" "$SOURCE_REPO/scripts/source-common.sh"
+mv "$SOURCE_REPO/scripts/lib/operation-lock.sh" "$SOURCE_REPO/scripts/lib/lifecycle-lock.sh"
+while IFS= read -r -d '' source_file; do
+    sed -i -e 's/install-common\.sh/source-common.sh/g' \
+        -e 's/operation-lock\.sh/lifecycle-lock.sh/g' "$source_file"
+done < <(find "$SOURCE_REPO/scripts" -type f -name '*.sh' -print0)
 "$REAL_GIT" -C "$SOURCE_REPO" add .
 "$REAL_GIT" -C "$SOURCE_REPO" commit -qm update
 "$REAL_GIT" -C "$SOURCE_REPO" archive --prefix=source/ HEAD | gzip >"$SOURCE_ARCHIVE"
@@ -69,6 +79,29 @@ done
 cp "$SOURCE_ARCHIVE" "$destination"
 STUB
 chmod +x "$WORK_DIR/bin/"*
+# 目标缺少交接入口或它自己的内部文件时，旧版必须在源码替换前停止。
+TARGET_HEAD=$("$REAL_GIT" -C "$SOURCE_REPO" rev-parse HEAD)
+for invalid in entry private-file; do
+    if [ "$invalid" = entry ]; then
+        sed -i 's/^_update_apply_source()/_removed_apply_source()/' "$SOURCE_REPO/scripts/cmd/update.sh"
+    else
+        rm "$SOURCE_REPO/uninstall.sh"
+    fi
+    "$REAL_GIT" -C "$SOURCE_REPO" add -A
+    "$REAL_GIT" -C "$SOURCE_REPO" commit -qm "invalid-$invalid"
+    "$REAL_GIT" -C "$SOURCE_REPO" archive --prefix=source/ HEAD | gzip >"$SOURCE_ARCHIVE"
+    PATH="$WORK_DIR/bin:$PATH" CLASHCTL_HOME="$WORK_DIR/bash-archive" bash -c '
+        . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" || exit 1
+        clashctl update
+    ' >"$WORK_DIR/output" 2>&1 && fail "invalid target accepted: $invalid"
+    grep -q '源码不兼容' "$WORK_DIR/output" || { cat "$WORK_DIR/output"; fail "missing target diagnosis: $invalid"; }
+    (cd "$WORK_DIR/bash-archive" && sha256sum --status -c .clashctl-files) ||
+        fail "invalid target changed installed source: $invalid"
+    [ -z "$(find "$WORK_DIR" -maxdepth 1 -name 'bash-archive.update.*' -print -quit)" ] ||
+        fail "invalid target retained temporary files: $invalid"
+    "$REAL_GIT" -C "$SOURCE_REPO" reset --hard -q "$TARGET_HEAD"
+done
+"$REAL_GIT" -C "$SOURCE_REPO" archive --prefix=source/ HEAD | gzip >"$SOURCE_ARCHIVE"
 for shell in bash zsh; do
     shell_args=(-c)
     [ "$shell" != zsh ] || shell_args=(-f -c)
@@ -79,6 +112,10 @@ for shell in bash zsh; do
             [ "$CLASHCTL_TEST_VERSION" = old ] || exit 1
             clashctl update || exit 1
             [ "$CLASHCTL_TEST_VERSION" = new ] || exit 1
+            [ ! -e "$CLASHCTL_HOME/scripts/install-common.sh" ] || exit 1
+            [ ! -e "$CLASHCTL_HOME/scripts/lib/operation-lock.sh" ] || exit 1
+            # 改名后的目标入口也能再次更新，不能依赖当前 Shell 残留的旧函数。
+            bash -c '\''. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update'\'' || exit 1
         ' >"$WORK_DIR/output" 2>&1 || { cat "$WORK_DIR/output"; fail "$shell $method update failed"; }
     done
 done
