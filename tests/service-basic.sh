@@ -9,7 +9,12 @@ export CLASHCTL_HOME="$WORK_DIR/home" CLASHCTL_SRC="$REPO_DIR" CLASHCTL_KERNEL=m
 . "$REPO_DIR/scripts/lib/service.sh"
 # 所有服务操作都限制在临时目录，不调用宿主 init。
 _service_target() { printf '%s/unit.service\n' "$WORK_DIR"; }
-systemctl() { :; }
+systemctl() {
+    case "$*" in
+    'show mihomo.service -p FragmentPath') printf 'FragmentPath=\n' ;;
+    *) : ;;
+    esac
+}
 service_enable() { touch "$WORK_DIR/enabled"; }
 service_disable() { rm -f "$WORK_DIR/enabled"; }
 service_is_active() { [ -f "$WORK_DIR/active" ]; }

@@ -177,6 +177,10 @@ printf '%s\n' "$*" >>"$NESTED_UNIT_DIR/calls"
 record="$NESTED_UNIT_DIR/process"
 kernel=${CLASHCTL_KERNEL:-mihomo}
 for argument in "$@"; do
+    if [ "$argument" = --value ]; then
+        printf "systemctl: unrecognized option '--value'\n" >&2
+        exit 64
+    fi
     case $argument in mihomo | mihomo.service) kernel=mihomo ;; clash | clash.service) kernel=clash ;; esac
 done
 case "${1:-}" in
@@ -184,9 +188,13 @@ show)
     case "$*" in
     *FragmentPath*)
         fragment=$(cat "$NESTED_UNIT_DIR/fragment")
-        if [ "${fragment##*/}" = "$kernel.service" ]; then printf '%s\n' "$fragment"; fi
+        if [ "${fragment##*/}" != "$kernel.service" ]; then fragment=''; fi
+        printf 'FragmentPath=%s\n' "$fragment"
         ;;
-    *MainPID*) _service_process_record_pid "$record" 2>/dev/null || printf '0\n' ;;
+    *MainPID*)
+        pid=$(_service_process_record_pid "$record" 2>/dev/null) || pid=0
+        printf 'MainPID=%s\n' "$pid"
+        ;;
     *) exit 92 ;;
     esac
     ;;
